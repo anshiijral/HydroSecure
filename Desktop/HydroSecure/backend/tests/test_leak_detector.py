@@ -33,3 +33,25 @@ def test_hysteresis_clears_active_warning():
     det.process(1.0)
     det.process(1.0)
     assert det.active_severity == LeakSeverity.NONE
+
+
+def test_critical_alert_downgrades_after_sustained_recovery():
+    det = LeakDetector(
+        LeakConfig(
+            warning_threshold=1.8,
+            critical_threshold=3.2,
+            consecutive_samples=2,
+            hysteresis=0.5,
+        )
+    )
+
+    det.process(3.5)
+    det.process(3.5)
+    assert det.active_severity == LeakSeverity.CRITICAL
+
+    det.process(2.5)
+    assert det.active_severity == LeakSeverity.CRITICAL
+
+    det.process(2.5)
+    assert det.active_severity == LeakSeverity.WARNING
+

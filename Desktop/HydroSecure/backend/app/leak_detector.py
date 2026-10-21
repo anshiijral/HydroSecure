@@ -63,47 +63,67 @@ class LeakDetector:
         )
         return LeakEvent(severity=severity, delta_lpm=round(delta, 2), message=message)
 
+    
+
+    
     def process(self, delta_lpm: float) -> tuple[LeakSeverity, LeakEvent | None]:
         raw = _raw_severity(delta_lpm, self.config)
         new_event: LeakEvent | None = None
-        prev_active = self.active_severity
 
         if raw == LeakSeverity.CRITICAL:
             self._consecutive_critical += 1
             self._consecutive_warning = 0
             self._consecutive_clear = 0
+
         elif raw == LeakSeverity.WARNING:
             self._consecutive_warning += 1
             self._consecutive_critical = 0
             self._consecutive_clear = 0
+
         else:
             self._consecutive_warning = 0
             self._consecutive_critical = 0
-            if self.active_severity != LeakSeverity.NONE:
-                if delta_lpm <= self._clear_threshold():
-                    self._consecutive_clear += 1
-                    if self._consecutive_clear >= self.config.consecutive_samples:
-                        self.active_severity = LeakSeverity.NONE
-                        self._consecutive_clear = 0
-                else:
-                    self._consecutive_clear = 0
-            else:
-                self._consecutive_clear = 0
+            # Do not reset _consecutive_clear here.
+            # The recovery logic below needs to count consecutive low readings.
 
-        if self.active_severity != LeakSeverity.CRITICAL:
-            if self._consecutive_critical >= self.config.consecutive_samples:
-                self.active_severity = LeakSeverity.CRITICAL
-                new_event = self._make_event("critical", delta_lpm)
-
+        # Escalate to critical after sustained critical readings.
         if (
-            new_event is None
-            and self.active_severity == LeakSeverity.NONE
+            raw == LeakSeverity.CRITICAL
+            and self._consecutive_critical >= self.config.consecutive_samples
+            and self.active_severity != LeakSeverity.CRITICAL
+        ):
+            self.active_severity = LeakSeverity.CRITICAL
+            new_event = self._make_event("critical", delta_lpm)
+
+        # Downgrade critical to warning after sustained warning-level readings.
+        elif (
+            self.active_severity == LeakSeverity.CRITICAL
+            and raw == LeakSeverity.WARNING
             and self._consecutive_warning >= self.config.consecutive_samples
         ):
             self.active_severity = LeakSeverity.WARNING
             new_event = self._make_event("warning", delta_lpm)
 
-        if prev_active == LeakSeverity.WARNING and self.active_severity == LeakSeverity.CRITICAL and new_event:
-            pass
+        # Activate a warning if no alert is currently active.
+        elif (
+            self.active_severity == LeakSeverity.NONE
+            and raw == LeakSeverity.WARNING
+            and self._consecutive_warning >= self.config.consecutive_samples
+        ):
+            self.active_severity = LeakSeverity.WARNING
+            new_event = self._make_event("warning", delta_lpm)
+
+        # Clear an active alert after sustained readings below its recovery threshold.
+        if self.active_severity != LeakSeverity.NONE:
+            if delta_lpm <= self._clear_threshold():
+                self._consecutive_clear += 1
+
+                if self._consecutive_clear >= self.config.consecutive_samples:
+                    self.active_severity = LeakSeverity.NONE
+                    self._consecutive_clear = 0
+            else:
+                self._consecutive_clear = 0
+        else:
+            self._consecutive_clear = 0
 
         return self.active_severity, new_event
